@@ -40,27 +40,25 @@ class ReefPost:
         A double
         '''
         self.angle = None
-
-        '''
-        the time at which the distance and angle were acquired
-        an integer representing the number of frames captured so far
-        '''
-        self.timestamp = None
     # end __init__
 # end class ReefPost
 
 
-
-class ReefpostPublisher:
-    # NetworkTables.initialize(server="10.25.30.2") #todo -> find actual roborio thing
-    # ntTable = NetworkTables.getTable("SmartDashboard")
-    # ntTable.putNumberArray("Dists to poles", distArray)
-    # ntTable.putNumberArray("Angles to poles", angArray)
-    
+class ReefPostPublisher:
     def __init__(self):
-        pass
-    def PublishReefPost(self, reefpost):
-        pass
+        self.counter = 0
+        self.NetworkTables.initialize(server="10.25.30.2") #todo -> find actual roborio thing
+        self.ntTable = NetworkTables.getTable("SmartDashboard")
+
+    def publish(self, posts: list):
+        angles = [x.angle for x in posts]
+        distances = [x.distance for x in posts]
+
+        self.ntTable.putNumberArray("CoralVision/raw/angles", angles)
+        self.ntTable.putNumberArray("CoralVision/raw/distances", distances)
+        self.ntTable.putNumber("CoralVision/raw/frame", self.counter)
+        self.counter += 1
+        
 # end class ReefpostPublisher
 
 class ReefPostDetector:
@@ -95,9 +93,30 @@ class ReefPostDetector:
         if frame is None or not isinstance(frame, ac.DepthData):
             print(f"Frame {self.time}, dropped")
             return []
-        buffer_depth = frame.depth_data/1000.
-        buffer_confidence = frame.confidence_data
-        return buffer_depth, buffer_confidence
+        buffer_depth = frame.depth_data/1000.     # distance from each point in meters        
+        buffer_confidence = frame.confidence_data # 
+
+        # magic for detecting reef posts        
+        reef_posts = []
+
+        # Step 1: scan depth horizontally for local minima. 
+        # This should generate an image with lines that follow the 
+        # center of the reefposts, with possibly other junk we can 
+        # filter out later.
+        buffer_depth_blurred = cv2.GaussianBlur(buffer_depth, (5, 5), 1.5)
+
+        # Step 2: search for lines with Hough Lines? Or contour detection?
+        # contour detection might be easier to process
+        
+        # Step 3: filter contours by length and height/width ratio
+
+        # Step 4: for each contour, fit a line of depth values to interpolate
+        
+
+        # end magic
+
+        
+        return reef_posts
     # end detect_reef_posts
 # end class ReefPostDetector
 
@@ -106,7 +125,7 @@ class ReefPostDetector:
 
 def x2angle(x: float) -> float:
     '''
-    Given the horizonta position of a pixel in the image,
+    Given the horizontal position of a pixel in the image,
     compute the angle in a way that's friendly for the robot
     to digest. This would usually come right before sending
     such a value to the robot via network tables
@@ -130,79 +149,12 @@ def x2angle(x: float) -> float:
 
 
 def main():
-    r = ReefPostDetector()
-    depth, confidence = r.detect_reef_posts()
-    depth[confidence<30]=0
-    depth[depth>1]=0
-    kernel = np.ones((5, 5), np.uint8)  # You can adjust the size and shape
-    # depth_filtered = cv2.erode(depth, kernel, iterations=1)
-    # depth_filtered = cv2.dilate(depth_filtered, kernel, iterations=1)
-    depth_filtered=depth
-    a = np.min(depth_filtered[depth_filtered>0])
-    b = np.max(depth_filtered[depth_filtered>0])
-    depth_uint8 = ((depth-a) / (b-a) * 255 ).astype(np.uint8)
-    depth_uint8 = cv2.medianBlur(depth_uint8, 5)
-    depth_uint8 = cv2.erode(depth_uint8, kernel, iterations=1)
-    # blurred = cv2.GaussianBlur(depth_uint8, (5, 5), 1.5)
-    blurred = depth_uint8
-    cv2.imshow('Canny Edges', blurred)
-    cv2.waitKey(0)
-    edges = cv2.Canny(blurred, 100, 200, 11)
-
-
-    cv2.imshow('Canny Edges', edges)
-    cv2.waitKey(0)
-    
-
-    # Assume edges and depth arrays are already defined as per your code
-    contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_TC89_L1)
-
-    results = []
-
-    center_row = depth.shape[0] // 2
-
-    for cnt in contours:
-        area = cv2.contourArea(cnt)         
-        if area > 100: 
-            continue
-        mask = np.zeros(depth.shape, dtype=np.uint8)
-        cv2.drawContours(mask, [cnt], -1, color=255, thickness=-1)
-
-        min_depth_points = []
-
-        for row in range(depth.shape[0]):
-            masked_row = np.where(mask[row, :] > 0, depth[row, :], 0)
-            nonzero_vals = masked_row[masked_row > 0]
-
-            if nonzero_vals.size > 5:
-                min_depth = np.min(nonzero_vals)
-                min_depth_points.append((row, min_depth))
-
-        if len(min_depth_points) >= 40:  # At least 2 points required for fitting
-            rows, depths = zip(*min_depth_points)
-            slope, intercept, _, _, _ = stats.linregress(rows, depths)
-
-            # Interpolate depth at the center row
-            depth_at_center = slope * center_row + intercept
-            results.append({
-                'contour': cnt,
-                'slope': slope,
-                'intercept': intercept,
-                'depth_at_center': depth_at_center
-            })
-        
-        cv2.drawContours(mask, [cnt], -1, 255, thickness=cv2.FILLED)
-        cv2.imshow('Canny Edges', mask)
-        cv2.waitKey(0)
-
-    # Example: print results
-    for i, res in enumerate(results):
-        print(f"Object {i}: Depth at image center row = {res['depth_at_center']:.2f}")
-        
-
-    # Display the edges
-    cv2.destroyAllWindows()
-
+    detector = ReefPostDetector()
+    publisher = ReefPostPublisher() 
+    while True:
+        reefposts = detector.detect_reef_posts()
+        publisher.publish(reefposts)
+# end main
 
 if __name__ == "__main__":
     main()
