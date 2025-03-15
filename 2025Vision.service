@@ -1,0 +1,15 @@
+[Unit]
+Description=Team 2530 Vision coprocessor service
+
+Wants=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python /home/objectdetection0/code/2025Vision/main.py
+Restart=on-failure
+Restart=1
+KillMode=mixed
+
+[Install]
+WantedBy=multi-user.target
+

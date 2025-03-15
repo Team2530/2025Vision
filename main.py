@@ -56,6 +56,12 @@ class ReefPostPublisher:
         self.distpub = self.nttable.getDoubleArrayTopic("distances").publish()
 
     def publish(self, posts: list):
+
+        if self.counter % 100 == 0:
+            print(self.counter)
+            for post in posts:
+                print(post.distance, post.angle)
+
         angles = [x.angle for x in posts]
         distances = [x.distance for x in posts]
 
@@ -63,7 +69,6 @@ class ReefPostPublisher:
         self.distpub.set(distances)
         self.framepub.set(self.counter)
         self.counter += 1
-        print(self.counter)
         
 # end class ReefpostPublisher
 
@@ -134,11 +139,9 @@ class ReefPostDetector:
 
         # Step 2: Search the horizontal axis intersecting the principal axis for local minima
         center_pixels_of_minima = np.where(depth_minima[buffer_depth.shape[0]//2, :])
-        print(center_pixels_of_minima)
 
         # Step 3: get depth and angle values of local minima
         center_pixel_depth_values = buffer_depth[buffer_depth.shape[0]//2, center_pixels_of_minima][0]
-        print(center_pixel_depth_values)
         def x2angle(x: float) -> float:
             '''
             Given the horizontal position of a pixel in the image,
@@ -161,46 +164,9 @@ class ReefPostDetector:
             return -atan(x_center / camera["fov_horizontal"])
         # end x2angle
         center_pixel_angle_values = [x2angle(i) for i in center_pixels_of_minima[0]]
-        print(center_pixel_angle_values)
 
         # Step 4: put angles and distances together into ReefPost objects
-        class ReefPost:
-            def __init__(self, distance=0, angle=0):
-
-                '''
-                the distance of the center of the cross section of the reefpost 
-                    on the plane intersecting the aperture and 
-                    parallel to the ground plane
-                relative to the camera, in meters
-                
-                A double
-                '''
-                self.distance = distance
-
-                '''
-                the angle formed by
-                    the camera's principal axis and 
-                    the segment containing 
-                        the aperture and 
-                        the center of the cross section of the reefpost 
-                            on the plane intersecting the aperture and 
-                            parallel to the ground plane
-                in radians.
-
-                If the reefpost is on the right side of the camera view,
-                the value should be negative.
-
-                If the reefpost is in the center of the camera view,
-                the angle should be zero.
-
-                A double
-                '''
-                self.angle = angle
-            # end __init__
-        # end class ReefPost
         reef_posts = [ReefPost(distance=d, angle=a) for d, a in zip(center_pixel_depth_values, center_pixel_angle_values)]
-        for post in reef_posts:
-            print(post.distance, post.angle)
 
         
         self.camera.releaseFrame(frame)
@@ -243,11 +209,6 @@ def main():
     publisher = ReefPostPublisher() 
     while True:
         reefposts = detector.detect_reef_posts()
-        reefposts = [
-            ReefPost(1, 0),
-            ReefPost(2, 1.5)
-        ]
-        print(reefposts)
         publisher.publish(reefposts)
     
     self.camera.stop()
