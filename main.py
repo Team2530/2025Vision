@@ -5,8 +5,10 @@ from math import *
 import pickle
 import ntcore
 import cv2
-
-
+import threading
+from flask import Flask, Response
+from queue import Queue, Empty
+from threading import Thread
 
 class ReefPost:
     def __init__(self, distance=0, angle=0):
@@ -55,7 +57,7 @@ class ReefPostPublisher:
         self.anglepub = self.nttable.getDoubleArrayTopic("angles").publish()
         self.distpub = self.nttable.getDoubleArrayTopic("distances").publish()
 
-    def publish(self, posts: list):
+    def publish_posts(self, posts: list):
 
         if self.counter % 100 == 0:
             print(self.counter)
@@ -69,6 +71,7 @@ class ReefPostPublisher:
         self.distpub.set(distances)
         self.framepub.set(self.counter)
         self.counter += 1
+        self.ntinst.flush()
         
 # end class ReefpostPublisher
 
@@ -94,16 +97,18 @@ class ReefPostDetector:
         pass
     # end __init__
 
-
-    def detect_reef_posts(self):
-        """
-        Returns a list of detected ReefPost objects
-        """
+    def get_frame(self):
         self.time = self.time + 1
         frame = self.camera.requestFrame(2000)
         if frame is None or not isinstance(frame, ac.DepthData):
             print(f"Frame {self.time}, dropped")
             return []
+        return frame
+
+    def detect_reef_posts(self, frame):
+        """
+        Returns a list of detected ReefPost objects
+        """
         buffer_depth = frame.depth_data/1000.     # distance from each point in meters        
         buffer_confidence = frame.confidence_data # 
 
@@ -155,13 +160,13 @@ class ReefPostDetector:
                 "fov_diagonal": radians(70)
             }
             camera["image_diagonal"] = sqrt( camera['image_width']**2 + camera['image_height']**2 )
-            camera["focal_length"] = camera["image_diagonal"] / ( 2 * tan(camera["fov_diagonal"]/2) )
-            camera["fov_horizontal"] = 2 * atan(camera["image_width"] / (2*camera["focal_length"]))
+            camera["focal_length"] = (camera["image_diagonal"]/2) / (tan(camera["fov_diagonal"]/2))
+            camera["fov_horizontal"] = 2 * atan(camera["image_width"] / (camera["focal_length"]))
 
-            x_center = x - camera["image_width"] / 2
+            x_center = camera["image_width"] / 2 - x
             # Negating the result because the robot expects clockwise rotation.
             # In other words, objects to the right to have a negative angle
-            return -atan(x_center / camera["fov_horizontal"])
+            return atan(x_center / camera["focal_length"])
         # end x2angle
         center_pixel_angle_values = [x2angle(i) for i in center_pixels_of_minima[0]]
 
@@ -175,29 +180,76 @@ class ReefPostDetector:
     # end detect_reef_posts
 # end class ReefPostDetector
 
+class VideoStream:
+    def __init__(self):
+        self.app = Flask(__name__)
+        self.framebuffer = Queue()
+        self.setup_routes()
+    # end VideoStream.__init__
+
+    def publish_frame(self, frame):
+        _, jpeg = cv2.imencode('.jpg', frame)
+        return (b'--frame\r\n'
+                b'Content-Type: image/jpeg\r\n\r\n' + jpeg.tobytes() + b'\r\n')
+    # end VideoStream.publish_frame
+
+    def setup_routes(self):
+        @self.app.route('/')
+        def index():
+            return """
+            <html>
+                <head>
+                    <title>Video Stream</title>
+                </head>
+                <body>
+                    <h1>OpenCV Video Stream</h1>
+                    <img src=\"/video_feed\">
+                </body>
+            </html>
+            """
+        # end 
+
+        @self.app.route('/video_feed')
+        def video_feed():
+            def generate_frames():
+                while True:
+                    try:
+                        frame = self.framebuffer.get(timeout=1)
+                        yield self.publish_frame(frame)
+                    except Empty:
+                        continue
+
+            return Response(generate_frames(),
+                            mimetype='multipart/x-mixed-replace; boundary=frame')
+    # end VideoStream.setup_routes
+
+    def start(self):
+        thread = Thread(target=self.app.run, kwargs={'debug': False, 'host': '0.0.0.0', 'port': 5000}, daemon=True)
+        thread.start()
+    # end VideoStream.start
+# end class VideoStream
 
 
-
-def x2angle(x: float) -> float:
-    '''
-    Given the horizontal position of a pixel in the image,
-    compute the angle in a way that's friendly for the robot
-    to digest. This would usually come right before sending
-    such a value to the robot via network tables
-    '''
-    camera = {
-        "image_width": 240,
-        "image_height": 180,
-        "fov_diagonal": radians(70)
-    }
-    camera["image_diagonal"] = sqrt( camera['image_width']**2 + camera['image_height']**2 )
-    camera["focal_length"] = camera["image_diagonal"] / ( 2 * tan(camera["fov_diagonal"]/2) )
-    camera["fov_horizontal"] = 2 * atan(camera["image_width"] / (2*camera["focal_length"]))
-
-    x_center = x - camera["image_width"] / 2
-    # Negating the result because the robot expects clockwise rotation.
-    # In other words, objects to the right to have a negative angle
-    return -atan(x_center / camera["fov_horizontal"])
+#def x2angle(x: float) -> float:
+#   '''
+#    Given the horizontal position of a pixel in the image,
+#    compute the angle in a way that's friendly for the robot
+#    to digest. This would usually come right before sending
+#    such a value to the robot via network tables
+#    '''
+#    camera = {
+#        "image_width": 240,
+#        "image_height": 180,
+#        "fov_diagonal": radians(70)
+#    }
+#    camera["image_diagonal"] = sqrt( camera['image_width']**2 + camera['image_height']**2 )
+#    camera["focal_length"] = camera["image_diagonal"] / ( 2 * tan(camera["fov_diagonal"]/2) )
+#    camera["fov_horizontal"] = 2 * atan(camera["image_width"] / (2*camera["focal_length"]))
+#
+#    x_center = x - camera["image_width"] / 2
+#    # Negating the result because the robot expects clockwise rotation.
+#    # In other words, objects to the right to have a negative angle
+#    return -atan(x_center / camera["fov_horizontal"])
 # end x2angle
 
 
@@ -207,9 +259,21 @@ def main():
     print("swaaws")
     detector = ReefPostDetector()
     publisher = ReefPostPublisher() 
+    streamer = VideoStream()
     while True:
-        reefposts = detector.detect_reef_posts()
-        publisher.publish(reefposts)
+        frame = detector.get_frame()
+        if not isinstance(frame, ac.Frame):
+            continue
+        reefposts = detector.detect_reef_posts(frame)
+        publisher.publish_posts(reefposts)
+
+        # rendering and serving on port 5000
+        buffer_depth = frame.depth_data/1000.     # distance from each point in meters        
+        buffer_confidence = frame.confidence_data # confidence data from camera
+        preview = np.nan_to_num(buffer_depth)
+        preview = (preview * (255.0 / 2)).astype(np.uint8)
+        preview = cv2.applyColorMap(preview, cv2.COLORMAP_RAINBOW)
+        streamer.publish_frame(preview)
     
     self.camera.stop()
     self.camera.close()
