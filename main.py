@@ -9,6 +9,7 @@ import threading
 from flask import Flask, Response
 from queue import Queue, Empty
 from threading import Thread
+import traceback
 
 class ReefPost:
     def __init__(self, distance=0, angle=0):
@@ -161,11 +162,8 @@ class ReefPostDetector:
             }
             camera["image_diagonal"] = sqrt( camera['image_width']**2 + camera['image_height']**2 )
             camera["focal_length"] = (camera["image_diagonal"]/2) / (tan(camera["fov_diagonal"]/2))
-            camera["fov_horizontal"] = 2 * atan(camera["image_width"] / (camera["focal_length"]))
-
+            # camera["fov_horizontal"] = 2 * atan(camera["image_width"] / (camera["focal_length"]))
             x_center = camera["image_width"] / 2 - x
-            # Negating the result because the robot expects clockwise rotation.
-            # In other words, objects to the right to have a negative angle
             return atan(x_center / camera["focal_length"])
         # end x2angle
         center_pixel_angle_values = [x2angle(i) for i in center_pixels_of_minima[0]]
@@ -230,29 +228,6 @@ class VideoStream:
 # end class VideoStream
 
 
-#def x2angle(x: float) -> float:
-#   '''
-#    Given the horizontal position of a pixel in the image,
-#    compute the angle in a way that's friendly for the robot
-#    to digest. This would usually come right before sending
-#    such a value to the robot via network tables
-#    '''
-#    camera = {
-#        "image_width": 240,
-#        "image_height": 180,
-#        "fov_diagonal": radians(70)
-#    }
-#    camera["image_diagonal"] = sqrt( camera['image_width']**2 + camera['image_height']**2 )
-#    camera["focal_length"] = camera["image_diagonal"] / ( 2 * tan(camera["fov_diagonal"]/2) )
-#    camera["fov_horizontal"] = 2 * atan(camera["image_width"] / (2*camera["focal_length"]))
-#
-#    x_center = x - camera["image_width"] / 2
-#    # Negating the result because the robot expects clockwise rotation.
-#    # In other words, objects to the right to have a negative angle
-#    return -atan(x_center / camera["fov_horizontal"])
-# end x2angle
-
-
 
 
 def main():
@@ -260,23 +235,29 @@ def main():
     detector = ReefPostDetector()
     publisher = ReefPostPublisher() 
     streamer = VideoStream()
-    while True:
-        frame = detector.get_frame()
-        if not isinstance(frame, ac.Frame):
-            continue
-        reefposts = detector.detect_reef_posts(frame)
-        publisher.publish_posts(reefposts)
+    try:
+        while True:
+            frame = detector.get_frame()
+            if not isinstance(frame, ac.Frame):
+                continue
+            reefposts = detector.detect_reef_posts(frame)
+            publisher.publish_posts(reefposts)
 
-        # rendering and serving on port 5000
-        buffer_depth = frame.depth_data/1000.     # distance from each point in meters        
-        buffer_confidence = frame.confidence_data # confidence data from camera
-        preview = np.nan_to_num(buffer_depth)
-        preview = (preview * (255.0 / 2)).astype(np.uint8)
-        preview = cv2.applyColorMap(preview, cv2.COLORMAP_RAINBOW)
-        streamer.publish_frame(preview)
-    
-    self.camera.stop()
-    self.camera.close()
+            # rendering and serving on port 5000
+            buffer_depth = frame.depth_data/1000.     # distance from each point in meters        
+            buffer_confidence = frame.confidence_data # confidence data from camera
+            preview = np.nan_to_num(buffer_depth)
+            preview = (preview * (255.0 / 2)).astype(np.uint8)
+            preview = cv2.applyColorMap(preview, cv2.COLORMAP_RAINBOW)
+            streamer.publish_frame(preview)
+    except KeyboardInterrupt:
+        pass
+    except Exception as e:
+        print(e)
+        traceback
+    finally:
+        detector.camera.stop()
+        detector.camera.close()
 # end main
 
 if __name__ == "__main__":
