@@ -110,70 +110,51 @@ class ReefPostDetector:
         """
         Returns a list of detected ReefPost objects
         """
-        buffer_depth = frame.depth_data/1000.     # distance from each point in meters        
-        buffer_confidence = frame.confidence_data # 
+        buffer_depth = frame.depth_data / 1000.  # distance from each point in meters
+        buffer_confidence = frame.confidence_data
 
         def horizontal_local_minima(image):
-            # Initialize local minima as True array
             local_minima = np.ones_like(image, dtype=bool)
-            # Check against multiple horizontal neighbors (10 shifts in each direction)
             for shift in range(1, 11):
                 left_shift = np.roll(image, shift, axis=1)
                 right_shift = np.roll(image, -shift, axis=1)
                 local_minima &= (image <= left_shift) & (image <= right_shift)
             return local_minima
 
-        # Step 1: scan depth horizontally for local minima. 
-        def horizontal_local_minima(image):
-            # Initialize local minima as True array
-            local_minima = np.ones_like(image, dtype=bool)
-            # Check against multiple horizontal neighbors (10 shifts in each direction)
-            for shift in range(1, 11):
-                left_shift = np.roll(image, shift, axis=1)
-                right_shift = np.roll(image, -shift, axis=1)
-                local_minima &= (image <= left_shift) & (image <= right_shift)
-            return local_minima
-
-        # Step 1: scan depth horizontally for local minima. 
-        # This should generate an image with lines that follow the 
-        # center of the reefposts, with possibly other junk we can 
-        # filter out later.
+        # Step 1: scan depth horizontally for local minima.
         buffer_depth_blurred = cv2.GaussianBlur(buffer_depth, (11, 11), 5)
         depth_minima = horizontal_local_minima(buffer_depth_blurred)
-        depth_minima = depth_minima & (buffer_confidence > 30)
-        depth_minima_uint8 = depth_minima.astype(np.uint8) * 255
+        depth_minima &= (buffer_confidence > 30)
 
         # Step 2: Search the horizontal axis intersecting the principal axis for local minima
-        center_pixels_of_minima = np.where(depth_minima[buffer_depth.shape[0]//2, :])
+        center_row = buffer_depth.shape[0] // 2
+        center_pixels_of_minima = np.where(depth_minima[center_row, :])[0]
 
-        # Step 3: get depth and angle values of local minima
-        center_pixel_depth_values = buffer_depth[buffer_depth.shape[0]//2, center_pixels_of_minima][0]
         def x2angle(x: float) -> float:
-            '''
-            Given the horizontal position of a pixel in the image,
-            compute the angle in a way that's friendly for the robot
-            to digest. This would usually come right before sending
-            such a value to the robot via network tables
-            '''
             camera = {
                 "image_width": 240,
                 "image_height": 180,
                 "fov_diagonal": radians(70)
             }
-            camera["image_diagonal"] = sqrt( camera['image_width']**2 + camera['image_height']**2 )
-            camera["focal_length"] = (camera["image_diagonal"]/2) / (tan(camera["fov_diagonal"]/2))
-            # camera["fov_horizontal"] = 2 * atan(camera["image_width"] / (camera["focal_length"]))
+            camera["image_diagonal"] = sqrt(camera['image_width'] ** 2 + camera['image_height'] ** 2)
+            camera["focal_length"] = (camera["image_diagonal"] / 2) / (tan(camera["fov_diagonal"] / 2))
             x_center = camera["image_width"] / 2 - x
             return atan(x_center / camera["focal_length"])
-        # end x2angle
-        center_pixel_angle_values = [x2angle(i) for i in center_pixels_of_minima[0]]
 
-        # Step 4: put angles and distances together into ReefPost objects
-        reef_posts = [ReefPost(distance=d, angle=a) for d, a in zip(center_pixel_depth_values, center_pixel_angle_values)]
+        def is_valid_post(pixel, depth):
+            neighborhood = buffer_depth[max(center_row - 11, 0):center_row + 11,
+                                        max(pixel - 11, 0):pixel + 11]
+            return not np.all(np.abs(neighborhood - depth) < 0.2)
 
-        
+        # Step 3 & 4 combined with clearer filtering
+        reef_posts = [
+            ReefPost(distance=buffer_depth[center_row, pixel], angle=x2angle(pixel))
+            for pixel in center_pixels_of_minima
+            if is_valid_post(pixel, buffer_depth[center_row, pixel])
+        ]
+
         self.camera.releaseFrame(frame)
-        
+
         return reef_posts
     # end detect_reef_posts
 # end class ReefPostDetector
