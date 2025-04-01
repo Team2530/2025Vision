@@ -95,6 +95,8 @@ class ReefPostDetector:
         self.camera = configure_camera()
 
         self.time = 0
+
+        self.debug_frame = None
         pass
     # end __init__
 
@@ -138,16 +140,22 @@ class ReefPostDetector:
         # This should generate an image with lines that follow the 
         # center of the reefposts, with possibly other junk we can 
         # filter out later.
+
+        buffer_depth[buffer_confidence<60] = 10
         buffer_depth_blurred = cv2.GaussianBlur(buffer_depth, (11, 11), 5)
         depth_minima = horizontal_local_minima(buffer_depth_blurred)
-        depth_minima = depth_minima & (buffer_confidence > 30)
-        depth_minima_uint8 = depth_minima.astype(np.uint8) * 255
+        depth_minima = depth_minima & (buffer_confidence > 60)
 
         # Step 2: Search the horizontal axis intersecting the principal axis for local minima
         center_pixels_of_minima = np.where(depth_minima[buffer_depth.shape[0]//2, :])
 
         # Step 3: get depth and angle values of local minima
-        center_pixel_depth_values = buffer_depth[buffer_depth.shape[0]//2, center_pixels_of_minima][0]
+
+        # center_pixel_depth_values = buffer_depth[buffer_depth.shape[0]//2, center_pixels_of_minima][0] - 0.05
+        
+        center_pixel_depth_filtered = np.average(buffer_depth[np.arange(buffer_depth.shape[0]//2-2, buffer_depth.shape[0]//2+2),:] - 0.05,axis=0)
+        center_pixel_depth_values = center_pixel_depth_filtered[center_pixels_of_minima]        
+
         def x2angle(x: float) -> float:
             '''
             Given the horizontal position of a pixel in the image,
@@ -171,8 +179,20 @@ class ReefPostDetector:
         # Step 4: put angles and distances together into ReefPost objects
         reef_posts = [ReefPost(distance=d, angle=a) for d, a in zip(center_pixel_depth_values, center_pixel_angle_values)]
 
-        
+        # End: housekeeping
         self.camera.releaseFrame(frame)
+
+        # Optional: set debug
+        preview = np.nan_to_num(buffer_depth)
+        preview = (preview * (255.0 / 2)).astype(np.uint8)
+        preview = cv2.applyColorMap(preview, cv2.COLORMAP_RAINBOW) // 2
+        preview[buffer_confidence<60]=0
+        depth_minima_uint8 = cv2.cvtColor(depth_minima.astype(np.uint8) * 255, cv2.COLOR_GRAY2BGR)
+        preview = preview | depth_minima_uint8
+        for i in center_pixels_of_minima[0]:
+            cv2.circle(preview, (i,preview.shape[0]//2), 5, (0,0,0), -1)
+            cv2.circle(preview, (i,preview.shape[0]//2), 3, (0,255,0), -1)
+        self.debug_frame = preview
         
         return reef_posts
     # end detect_reef_posts
@@ -181,7 +201,7 @@ class ReefPostDetector:
 class VideoStream:
     def __init__(self):
         self.app = Flask(__name__)
-        self.framebuffer = Queue()
+        self.framebuffer = Queue(120)
         self.setup_routes()
     # end VideoStream.__init__
 
@@ -190,6 +210,11 @@ class VideoStream:
         return (b'--frame\r\n'
                 b'Content-Type: image/jpeg\r\n\r\n' + jpeg.tobytes() + b'\r\n')
     # end VideoStream.publish_frame
+
+    def queue_frame(self, frame):
+        if self.framebuffer.full():
+            self.framebuffer.get()
+        self.framebuffer.put(frame)
 
     def setup_routes(self):
         @self.app.route('/')
@@ -209,6 +234,8 @@ class VideoStream:
 
         @self.app.route('/video_feed')
         def video_feed():
+            while (not self.framebuffer.empty()):
+                self.framebuffer.get()
             def generate_frames():
                 while True:
                     try:
@@ -222,7 +249,7 @@ class VideoStream:
     # end VideoStream.setup_routes
 
     def start(self):
-        thread = Thread(target=self.app.run, kwargs={'debug': False, 'host': '0.0.0.0', 'port': 5000}, daemon=True)
+        thread = Thread(target=self.app.run, kwargs={'debug': False, 'host': '0.0.0.0', 'port': 2530}, daemon=True)
         thread.start()
     # end VideoStream.start
 # end class VideoStream
@@ -235,6 +262,7 @@ def main():
     detector = ReefPostDetector()
     publisher = ReefPostPublisher() 
     streamer = VideoStream()
+    streamer.start()
     try:
         while True:
             frame = detector.get_frame()
@@ -242,14 +270,8 @@ def main():
                 continue
             reefposts = detector.detect_reef_posts(frame)
             publisher.publish_posts(reefposts)
-
-            # rendering and serving on port 5000
-            buffer_depth = frame.depth_data/1000.     # distance from each point in meters        
-            buffer_confidence = frame.confidence_data # confidence data from camera
-            preview = np.nan_to_num(buffer_depth)
-            preview = (preview * (255.0 / 2)).astype(np.uint8)
-            preview = cv2.applyColorMap(preview, cv2.COLORMAP_RAINBOW)
-            streamer.publish_frame(preview)
+            # debug_frame is generated from detector.detect_reef_posts
+            streamer.queue_frame(detector.debug_frame)
     except KeyboardInterrupt:
         pass
     except Exception as e:
