@@ -5,7 +5,7 @@ Wants=network.target
 
 [Service]
 Type=simple
-ExecStart=sudo -H -u objectdetection0 bash  -c "/usr/bin/python /home/objectdetection0/code/2025Vision/main.py"
+ExecStart=/bin/bash /usr/local/bin/2025Vision.sh
 Restart=on-failure
 Restart=1
 KillMode=mixed
